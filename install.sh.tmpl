@@ -1,0 +1,1031 @@
+#!/usr/bin/env bash
+#
+# fez installer script. Meant to run on a mac with ssh access to a server you
+# wish to setup; to set up on the server by itself, use --local.
+#
+
+set -euo pipefail
+
+FEZ_VERSION="1.0.0"
+
+CONF_DIR="/etc/fez"
+LOOPBACK_IP="127.0.0.2"
+LOCAL_PORT="445"
+REMOTE_TLS_PORT="443"
+SERVER_NAME="fez.internal"
+PUBLIC_NAME="public.fez.internal"
+ADMIN_NAME="admin.fez.internal"
+SHARE_NAME="timemachine"
+SMB_USER="timemachine"
+REMOTE_DATA_DIR="/tm"
+REMOTE_CONF_DIR="/etc/fez"
+LAUNCHD_DIR="/Library/LaunchDaemons"
+TUNNEL_LABEL="com.fezbackup.tunnel"
+LOOPBACK_LABEL="com.fezbackup.loopback"
+ADMIN_LABEL="com.fezbackup.admin"
+ADMIN_LOCAL_PORT="8443"
+LOG_FILE="/var/log/fez.log"
+
+# Save some mb, avoid backing up stuff no one wants.
+TM_EXCLUDE="/private/var/db/diagnostics
+            /private/var/db/uuidtext
+            /private/var/db/CoreDuet
+            /private/var/db/DuetActivityScheduler
+            /private/var/log"
+OPENSSL="/usr/bin/openssl"
+
+SSH_HOST=""
+SSH_PORT="22"
+SSH_USER="root"
+NO_AUTOMOUNT="0"
+NO_SSH="0"
+RECOVERY="0"
+MULTIUSER="0"
+ADMIN="0"
+SERVER_ONLY="0"
+LOCAL="0"
+UNINSTALL="0"
+ENROLL_CODE=""
+
+WORK_DIR=""
+SSH_CTL=""
+CLIENT_CERT_EXPORT=""
+ENROLLED_PASSWORD=""
+
+# ---------------------------------------------------------------- output ----
+
+if [ -t 1 ]; then
+  BOLD=$(printf '\033[1m'); DIM=$(printf '\033[2m'); RED=$(printf '\033[31m')
+  YELLOW=$(printf '\033[33m'); GREEN=$(printf '\033[32m'); RESET=$(printf '\033[0m')
+else
+  BOLD=""; DIM=""; RED=""; YELLOW=""; GREEN=""; RESET=""
+fi
+
+step() { printf '\n%s==>%s %s%s\n' "$GREEN" "$RESET" "$BOLD" "$1$RESET"; }
+say()  { printf '    %s\n' "$1"; }
+note() { printf '    %s%s%s\n' "$DIM" "$1" "$RESET"; }
+warn() { printf '%s!!%s  %s\n' "$YELLOW" "$RESET" "$1" >&2; }
+die()  { printf '\n%serror:%s %s\n' "$RED" "$RESET" "$1" >&2; exit 1; }
+
+usage() {
+  cat <<USAGE
+fez installer ${FEZ_VERSION}
+
+Usage: install.sh [HOST] [options]
+
+Options:
+  -h, --host HOST     SSH hostname or IP of your VPS
+      --server HOST   Same thing, for when you are joining someone else's
+                      server and never log in to it
+  -p, --port PORT     SSH port (default: 22)
+  -u, --user USER     SSH user (default: root)
+      --tls-port PORT The port the tunnel listens on (default: 443)
+      --share NAME    Name of the share on the server (default: timemachine)
+      --enroll CODE   Join a server you have an invitation code for. No SSH
+                      access needed: this Mac hands over its certificate and
+                      gets its share name and password back. Combine with
+                      --recovery to get back into a backup after a Mac dies,
+                      once the admin has issued you a new code.
+      --multiuser     Server side option. Enables admin UI and enroll endpoint
+                      service, so you can add people from a browser instead of
+                      over SSH. The Mac that installs this is the only one that
+                      can reach the admin page.
+      --no-automount  Do not mount the share when finished
+      --admin         Make this Mac an administrator: adds its certificate to
+                      the server's admin list and switches the admin page on.
+                      Implies --multiuser, and needs SSH access to the server.
+      --server-only   Update the server and nothing else: no certificate, no
+                      tunnel, no mount, no sudo needed here. Pass --multiuser
+                      as well if the server runs the admin page.
+      --no-ssh        Set up this Mac only, without touching the server.
+                      Use this when someone else runs the server: it prints a
+                      certificate to hand them, and they add it for you.
+      --local         Set up the server side on the machine you are running
+                      this on, as root. No Mac, no ssh, no tunnel.
+      --uninstall     Undo everything on this Mac: the tunnels, /etc/fez, the
+                      loopback alias and the logs. Leaves the server, and the
+                      backups on it, completely alone.
+      --recovery      Set this mac up to read an existing backup rather than
+                      to make new ones. Installs the tunnel and mounts the
+                      share exactly as usual, then tells you how to open the
+                      backup instead of how to turn Time Machine on. Combine
+                      with --enroll or --no-ssh as normal.
+      --help          Show this message
+
+The server must be a Linux distro that you can SSH into. For non-Debian
+based Linux, you must also install docker yourself first.
+USAGE
+}
+
+cleanup() {
+  local code=$?
+  if [ -n "$SSH_CTL" ] && [ -S "$SSH_CTL" ]; then
+    ssh -o ControlPath="$SSH_CTL" -O exit "$SSH_USER@$SSH_HOST" 2>/dev/null || true
+  fi
+  [ -n "$WORK_DIR" ] && rm -rf "$WORK_DIR"
+  exit $code
+}
+trap cleanup EXIT INT TERM
+
+# ------------------------------------------------------------- arguments ----
+
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h|--host|--server) SSH_HOST="${2:-}"; shift 2 ;;
+      -p|--port) SSH_PORT="${2:-}"; shift 2 ;;
+      -u|--user) SSH_USER="${2:-}"; shift 2 ;;
+      --no-automount) NO_AUTOMOUNT="1"; shift ;;
+      --no-ssh) NO_SSH="1"; shift ;;
+      --recovery) RECOVERY="1"; shift ;;
+      --local) LOCAL="1"; shift ;;
+      --uninstall) UNINSTALL="1"; shift ;;
+      --multiuser) MULTIUSER="1"; shift ;;
+      --admin) ADMIN="1"; MULTIUSER="1"; shift ;;
+      --server-only) SERVER_ONLY="1"; shift ;;
+      --enroll) ENROLL_CODE="${2:-}"; shift 2 ;;
+      --share) SHARE_NAME="${2:-}"; shift 2 ;;
+      --tls-port) REMOTE_TLS_PORT="${2:-}"; shift 2 ;;
+      --help) usage; exit 0 ;;
+      -*) die "unknown option: $1 (try --help)" ;;
+      *) SSH_HOST="$1"; shift ;;
+    esac
+  done
+
+  # Nothing below needs a server: uninstalling only touches this Mac.
+  if [ "$UNINSTALL" = "1" ]; then
+    return 0
+  fi
+
+  # Contradictory flags, before anything is asked for.
+  if [ "$ADMIN" = "1" ]; then
+    if [ "$LOCAL" = "1" ]; then
+      die "--admin adds this Mac's certificate and --local has no Mac; switch the admin page on from the Mac you administer from"
+    fi
+    if [ "$NO_SSH" = "1" ] || [ -n "$ENROLL_CODE" ]; then
+      die "--admin writes to the server's admin list, so it needs SSH access; it cannot be combined with --no-ssh or --enroll"
+    fi
+  fi
+
+  if [ "$SERVER_ONLY" = "1" ]; then
+    if [ "$LOCAL" = "1" ]; then
+      die "--local already sets up the machine it runs on; --server-only works over ssh"
+    fi
+    if [ "$NO_SSH" = "1" ] || [ -n "$ENROLL_CODE" ]; then
+      die "--server-only touches only the server, so it cannot be used with --no-ssh or --enroll"
+    fi
+    if [ "$ADMIN" = "1" ]; then
+      die "--admin registers this mac's certificate, which --server-only skips; use --multiuser"
+    fi
+    if [ "$RECOVERY" = "1" ]; then
+      die "--recovery only changes what is printed for a mac, and --server-only sets none up"
+    fi
+  fi
+
+  if [ "$MULTIUSER" = "1" ] && { [ "$NO_SSH" = "1" ] || [ -n "$ENROLL_CODE" ]; }; then
+    die "--multiuser sets up the server, so it cannot be used with --no-ssh or --enroll"
+  fi
+
+  if [ -z "$SSH_HOST" ]; then
+    printf 'VPS hostname or IP address: '
+    read -r SSH_HOST
+  fi
+  [ -n "$SSH_HOST" ] || die "no host given"
+
+  case "$SSH_PORT" in
+    ''|*[!0-9]*) die "port must be a number: $SSH_PORT" ;;
+  esac
+  case "$REMOTE_TLS_PORT" in
+    ''|*[!0-9]*) die "tls port must be a number: $REMOTE_TLS_PORT" ;;
+  esac
+
+  if [ -n "$ENROLL_CODE" ]; then
+    # An invitation means no account on the server, so nothing to ssh into.
+    NO_SSH="1"
+    case "$ENROLL_CODE" in
+      *[!a-f0-9]*) die "that invitation code has characters it should not; it is 32 letters a-f and digits" ;;
+    esac
+    [ "${#ENROLL_CODE}" = "32" ] || die "that invitation code is ${#ENROLL_CODE} characters, it should be 32"
+  fi
+
+  # The share name is also a Unix username on the server.
+  case "$SHARE_NAME" in
+    [a-z0-9]*) ;;
+    *) die "share name must start with a lowercase letter or digit: $SHARE_NAME" ;;
+  esac
+  case "$SHARE_NAME" in
+    *[!a-z0-9-]*) die "share name may only contain lowercase letters, digits and dashes: $SHARE_NAME" ;;
+  esac
+  SMB_USER="$SHARE_NAME"
+}
+
+preflight() {
+  [ "$(uname -s)" = "Darwin" ] || die "this installer runs on macOS; run it on the Mac you want to back up"
+
+  # Mounting as root hides the share from Finder and Time Machine.
+  [ "$(id -u)" != "0" ] || die "run this as yourself, not with sudo; it asks for sudo when it needs it"
+
+  local missing=""
+  for cmd in ssh openssl uuidgen nc ifconfig; do
+    command -v "$cmd" > /dev/null 2>&1 || missing="$missing $cmd"
+  done
+  [ -z "$missing" ] || die "missing required commands:$missing"
+  [ -x "$OPENSSL" ] || die "$OPENSSL not found"
+
+  WORK_DIR="$(mktemp -d /tmp/fez.XXXXXX)"
+  chmod 700 "$WORK_DIR"
+}
+
+# ------------------------------------------------------------------- ssh ----
+
+ssh_connect() {
+  step "Connecting to $SSH_USER@$SSH_HOST:$SSH_PORT"
+  note "you will be asked for the server password once; the connection is then reused"
+
+  SSH_CTL="$WORK_DIR/ssh.sock"
+  if ! ssh -p "$SSH_PORT" \
+       -o StrictHostKeyChecking=accept-new \
+       -o ControlMaster=auto -o ControlPath="$SSH_CTL" -o ControlPersist=600 \
+       -o ConnectTimeout=15 \
+       "$SSH_USER@$SSH_HOST" "true"; then
+    die "cannot SSH to $SSH_USER@$SSH_HOST:$SSH_PORT
+    if you rebuilt this server, its key changed and you need to forget the old one:
+      ssh-keygen -R $SSH_HOST"
+  fi
+  say "connected"
+}
+
+ssh_run() {
+  # Reuses the multiplexed connection if there is one; enrollment has none.
+  local conn=(-o ConnectTimeout=15)
+  if [ -n "$SSH_CTL" ]; then conn=(-o ControlPath="$SSH_CTL"); fi
+  ssh -p "$SSH_PORT" -o StrictHostKeyChecking=accept-new \
+      "${conn[@]}" "$SSH_USER@$SSH_HOST" "$@"
+}
+
+# The server is either at the far end of an ssh connection or this machine.
+server_run() {
+  if [ "$LOCAL" = "1" ]; then eval "$1"; else ssh_run "$1"; fi
+}
+
+# --------------------------------------------------------- client certs -----
+
+generate_client_identity() {
+  step "Setting up client certificate"
+
+  if sudo test -f "$CONF_DIR/client-cert.pem" && sudo test -f "$CONF_DIR/client-key.pem"; then
+    say "already present in $CONF_DIR, keeping it"
+    return 0
+  fi
+
+  # Self-signed: the server trusts this one cert, no CA to manage. CA:TRUE with
+  # keyCertSign, because OpenSSL will not take it as its own issuer otherwise
+  # and RFC 5280 requires the two together. pathlen:0 keeps it to leaves.
+  #
+  # The subject must be unique. OpenSSL indexes its trust store by subject, so
+  # a bundle of certs all called CN=localhost only ever authenticates one of
+  # them. A bare uuid names nobody and leaks nothing on the wire.
+  # A config file, not -addext: the LibreSSL on Monterey and earlier has no
+  # -addext. x509_extensions works everywhere.
+  cat > "$WORK_DIR/client.cnf" <<CLIENTCNF
+[req]
+distinguished_name = dn
+prompt = no
+x509_extensions = ext
+
+[dn]
+CN = $(uuidgen)
+
+[ext]
+basicConstraints = critical,CA:TRUE,pathlen:0
+keyUsage = critical,digitalSignature,keyCertSign
+extendedKeyUsage = clientAuth
+subjectKeyIdentifier = hash
+CLIENTCNF
+
+  "$OPENSSL" ecparam -name prime256v1 -genkey -noout -out "$WORK_DIR/client-key.pem"
+  "$OPENSSL" req -new -x509 -config "$WORK_DIR/client.cnf" \
+    -key "$WORK_DIR/client-key.pem" -out "$WORK_DIR/client-cert.pem" -days 3650
+
+  sudo mkdir -p "$CONF_DIR"
+  sudo chmod 755 "$CONF_DIR"
+  sudo install -o root -g wheel -m 600 "$WORK_DIR/client-key.pem"  "$CONF_DIR/client-key.pem"
+  sudo install -o root -g wheel -m 644 "$WORK_DIR/client-cert.pem" "$CONF_DIR/client-cert.pem"
+  say "created $CONF_DIR/client-cert.pem and client-key.pem"
+}
+
+register_client_cert() {
+  step "Registering your certificate on the server"
+
+  local cert_b64
+  cert_b64="$(sudo cat "$CONF_DIR/client-cert.pem" | "$OPENSSL" base64 -A)"
+
+  ssh_run "CERT_B64='$cert_b64' MULTIUSER='$MULTIUSER' ADMIN='$ADMIN' SHARE='$SHARE_NAME' bash -s" <<'REGISTER' || die "could not register the certificate on $SSH_HOST"
+set -euo pipefail
+mkdir -p /etc/fez
+
+NEW="$(mktemp)"
+printf '%s' "$CERT_B64" | base64 -d > "$NEW"
+NEW_FP="$(openssl x509 -in "$NEW" -noout -fingerprint -sha256 | cut -d= -f2)"
+
+# Appends this Mac's certificate to a trust bundle, and never twice.
+add_to_bundle() {
+  bundle="$1"; label="$2"
+  touch "$bundle"
+  chmod 644 "$bundle"
+
+  SPLIT="$(mktemp -d)"
+  awk -v d="$SPLIT" '/-----BEGIN CERTIFICATE-----/{n++} n>0 {print >> (d "/c" n ".pem")}' "$bundle"
+  for f in "$SPLIT"/c*.pem; do
+    [ -e "$f" ] || continue
+    FP="$(openssl x509 -in "$f" -noout -fingerprint -sha256 2> /dev/null | cut -d= -f2 || true)"
+    if [ "$FP" = "$NEW_FP" ]; then
+      rm -rf "$SPLIT"
+      echo "    already in $label"
+      return 0
+    fi
+  done
+  rm -rf "$SPLIT"
+
+  # Same annotation the admin page writes, so this Mac shows up by name.
+  printf '#fez user=%s added=%s\n' "$SHARE" "$(date -u +%Y-%m-%d)" >> "$bundle"
+  cat "$NEW" >> "$bundle"
+  echo "    added to $label ($(grep -c 'BEGIN CERTIFICATE' "$bundle") now)"
+}
+
+add_to_bundle /etc/fez/client-certs.pem "the client trust list"
+
+if [ "${ADMIN:-0}" = "1" ]; then
+  add_to_bundle /etc/fez/admin-certs.pem "the administrator list"
+elif [ "${MULTIUSER:-0}" = "1" ] && [ ! -s /etc/fez/admin-certs.pem ]; then
+  # Whoever sets the server up first gets it, so the page is reachable at all.
+  cp "$NEW" /etc/fez/admin-certs.pem
+  chmod 644 /etc/fez/admin-certs.pem
+  echo "    this Mac is now the administrator for admin.fez.internal"
+fi
+rm -f "$NEW"
+
+# Graceful reload if the proxy is already up, so no backup is interrupted.
+if [ -f /etc/fez/docker-compose.yml ]; then
+  cd /etc/fez && docker compose kill -s HUP tls > /dev/null 2>&1 || true
+fi
+REGISTER
+}
+
+# ----------------------------------------------------------- the server -----
+
+setup_server() {
+  step "Setting up the server (this takes a few minutes)"
+
+  server_run "HOST_ADDR='$SSH_HOST' TLS_PORT='$REMOTE_TLS_PORT' SHARE='$SHARE_NAME' MULTIUSER='$MULTIUSER' bash -s" <<'REMOTE'
+@@EMBED:setup-server.sh@@
+REMOTE
+
+  say "server configured"
+}
+
+# Leaves a copy on the server so the admin page can hand it out.
+upload_installer() {
+  if [ ! -f "$0" ]; then
+    note "running from a pipe, so no installer to copy to the server"
+    return 0
+  fi
+  step "Copying the installer to the server"
+  server_run "mkdir -p $REMOTE_CONF_DIR && cat > $REMOTE_CONF_DIR/install.sh && chmod 644 $REMOTE_CONF_DIR/install.sh" < "$0"
+  say "$REMOTE_CONF_DIR/install.sh"
+}
+
+# The server decides the password: it may already have one from an earlier Mac.
+fetch_share_password() {
+  local password
+  password="$(ssh_run "sed -n 's/^PASSWORD=//p' $REMOTE_CONF_DIR/users/$SHARE_NAME.conf | head -1")"
+  case "$password" in
+    ''|*[!0-9a-f]*) die "could not read the share password back from the server" ;;
+  esac
+  printf '%s' "$password"
+}
+
+# ------------------------------------------------------------ enrollment ----
+
+# Swaps an invitation code for a place on the server.
+submit_enrollment() {
+  step "Handing your certificate to the server"
+
+  local cert body response
+  cert="$(sudo cat "$CONF_DIR/client-cert.pem")"
+  body="$cert"$'\n'
+
+  # curl checks the hostname and our cert says localhost, ugh
+  response="$( {
+      printf 'PUT /enroll/%s HTTP/1.1\r\nHost: %s\r\n' "$ENROLL_CODE" "$PUBLIC_NAME"
+      printf 'Content-Type: application/x-pem-file\r\nContent-Length: %s\r\n' "${#body}"
+      printf 'Connection: close\r\n\r\n%s' "$body"
+    } | "$OPENSSL" s_client -quiet \
+      -connect "$SSH_HOST:$REMOTE_TLS_PORT" -servername "$PUBLIC_NAME" \
+      -CAfile "$CONF_DIR/server-ca.pem" -verify 5 -verify_return_error 2> /dev/null || true)"
+
+  [ -n "$response" ] || die "no answer from $SSH_HOST:$REMOTE_TLS_PORT
+    the server may not be running the enrollment service."
+
+  case "$response" in
+    *'"error"'*|*' 404 '*|*' 400 '*|*' 413 '*)
+      local reason
+      reason="$(printf '%s' "$response" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p' | head -1)"
+      [ -n "$reason" ] || reason="the server refused it"
+      die "enrollment failed: $reason
+    invitation codes are single use and expire; ask for a new one" ;;
+  esac
+
+  local user password
+  user="$(printf '%s' "$response" | sed -n 's/.*"user":"\([^"]*\)".*/\1/p' | head -1)"
+  password="$(printf '%s' "$response" | sed -n 's/.*"password":"\([^"]*\)".*/\1/p' | head -1)"
+  [ -n "$user" ] || die "the server answered, but not with a share name; nothing was changed on this Mac"
+
+  SHARE_NAME="$user"
+  SMB_USER="$user"
+  ENROLLED_PASSWORD="$password"
+  say "enrolled as '$user'"
+  note "the server is adding your certificate now"
+}
+
+# One mutual-TLS handshake. The caller decides where the output goes.
+client_handshake() {
+  printf 'Q\n' | sudo "$OPENSSL" s_client -connect "$SSH_HOST:$REMOTE_TLS_PORT" \
+    -servername "$SERVER_NAME" -cert "$CONF_DIR/client-cert.pem" \
+    -key "$CONF_DIR/client-key.pem" -CAfile "$CONF_DIR/server-ca.pem" \
+    -verify 5 -verify_return_error
+}
+
+# nginx needs a second to reload before it'll accept the new cert.
+wait_until_trusted() {
+  step "Waiting to be let in"
+
+  local waited=0
+  while [ "$waited" -lt 30 ]; do
+    if client_handshake > /dev/null 2>&1; then
+      say "the server accepts this Mac"
+      return 0
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+
+  warn "the server has not accepted this certificate yet"
+  note "it usually takes a couple of seconds; the tunnel is installed either"
+  note "way, so try mounting the share again in a minute"
+}
+
+# Grabs the server cert off the wire, TOFU.
+certificate_from_tls() {
+  # openssl exits non-zero here because we send no client certificate
+  { "$OPENSSL" s_client -connect "$SSH_HOST:$REMOTE_TLS_PORT" \
+      -servername "$SERVER_NAME" -showcerts < /dev/null 2> /dev/null || true; } \
+    | awk '/-----BEGIN CERTIFICATE-----/ { if (n++ == 0) p = 1 }
+           p { print }
+           /-----END CERTIFICATE-----/ { p = 0 }'
+}
+
+fetch_server_certificate() {
+  step "Fetching the server certificate"
+
+  local cert
+  if [ "$NO_SSH" = "1" ]; then
+    cert="$(certificate_from_tls)"
+    [ -n "$cert" ] || die "nothing answered at $SSH_HOST:$REMOTE_TLS_PORT
+    check the address, and that the server is running"
+    say "read from $SSH_HOST:$REMOTE_TLS_PORT"
+  else
+    cert="$(ssh_run "cat $REMOTE_CONF_DIR/server-cert.pem")"
+  fi
+  case "$cert" in
+    *"BEGIN CERTIFICATE"*) ;;
+    *) die "server certificate looks wrong" ;;
+  esac
+
+  printf '%s\n' "$cert" | sudo tee "$CONF_DIR/server-ca.pem" > /dev/null
+  sudo chmod 644 "$CONF_DIR/server-ca.pem"
+  say "saved to $CONF_DIR/server-ca.pem"
+
+  if [ "$NO_SSH" = "1" ]; then
+    note "fingerprint: $(printf '%s\n' "$cert" | "$OPENSSL" x509 -noout -fingerprint -sha256 | cut -d= -f2)"
+    note "worth confirming that with whoever runs the server"
+  fi
+}
+
+# ----------------------------------------------------------- the tunnel -----
+
+# Drops a plist in place and reloads it. Reads the plist on stdin.
+# Second argument: "on" starts it, "off" installs it disabled so launchd also
+# skips it at boot, "keep" rewrites the plist without touching whether it runs.
+install_plist() {
+  local label="$1" mode="${2:-on}" path="$LAUNCHD_DIR/$1.plist" loaded=0
+  if sudo launchctl print "system/$label" > /dev/null 2>&1; then loaded=1; fi
+
+  sudo tee "$path" > /dev/null
+  sudo chown root:wheel "$path"
+  sudo chmod 644 "$path"
+
+  case "$mode" in
+    off)
+      sudo launchctl bootout "system/$label" 2> /dev/null || true
+      sudo launchctl disable "system/$label"
+      ;;
+    keep)
+      # Only reload if it was already running, so a re-run never switches it on
+      # or off behind your back.
+      if [ "$loaded" = "1" ]; then
+        sudo launchctl bootout "system/$label" 2> /dev/null || true
+        sudo launchctl bootstrap system "$path"
+      fi
+      ;;
+    *)
+      sudo launchctl bootout "system/$label" 2> /dev/null || true
+      # In case an earlier run disabled it; bootstrap is refused otherwise.
+      sudo launchctl enable "system/$label" 2> /dev/null || true
+      sudo launchctl bootstrap system "$path"
+      ;;
+  esac
+}
+
+install_launchd_jobs() {
+  step "Installing the local tunnel"
+
+  # Sandbox for the openssl process: outbound to one port, and a handful of
+  # files. Everything else is denied.
+  sudo tee "$CONF_DIR/tunnel.sb" > /dev/null <<SANDBOX
+@@EMBED:tunnel.sb@@
+SANDBOX
+  sudo chown root:wheel "$CONF_DIR/tunnel.sb"
+  sudo chmod 644 "$CONF_DIR/tunnel.sb"
+
+  # The alias has to exist before launchd can bind 127.0.0.2:445 to it.
+  sudo ifconfig lo0 alias "$LOOPBACK_IP" up 2> /dev/null || true
+
+  install_plist "$LOOPBACK_LABEL" <<PLIST
+@@EMBED:loopback.plist@@
+PLIST
+
+  install_plist "$TUNNEL_LABEL" <<PLIST
+@@EMBED:tunnel.plist@@
+PLIST
+
+  say "listening on $LOOPBACK_IP:$LOCAL_PORT"
+
+  if [ "$MULTIUSER" = "1" ]; then
+    # --admin switches it on; otherwise a re-run leaves it as you had it.
+    local admin_mode=off
+    if [ "$ADMIN" = "1" ]; then
+      admin_mode=on
+    elif [ -f "$LAUNCHD_DIR/$ADMIN_LABEL.plist" ]; then
+      admin_mode=keep
+    fi
+    install_plist "$ADMIN_LABEL" "$admin_mode" <<PLIST
+@@EMBED:admin.plist@@
+PLIST
+    if sudo launchctl print "system/$ADMIN_LABEL" > /dev/null 2>&1; then
+      say "admin page running at http://$LOOPBACK_IP:$ADMIN_LOCAL_PORT/"
+    else
+      say "admin page installed but switched off"
+    fi
+  fi
+}
+
+export_client_cert() {
+  step "Putting your certificate on the Desktop"
+
+  local name
+  name="$(hostname -s 2> /dev/null || echo mac)"
+  CLIENT_CERT_EXPORT="$HOME/Desktop/fez-client-$name.pem"
+
+  sudo cat "$CONF_DIR/client-cert.pem" > "$CLIENT_CERT_EXPORT"
+  chmod 644 "$CLIENT_CERT_EXPORT"
+  say "$CLIENT_CERT_EXPORT"
+  note "this is a public certificate, it is safe to email"
+}
+
+# Keeps Time Machine from shipping the system logs. On a slow link this is the
+# difference between a 5 MB incremental and a 40 MB one.
+exclude_log_churn() {
+  step "Excluding system logs from Time Machine"
+  local path
+  for path in $TM_EXCLUDE; do
+    sudo tmutil addexclusion -p "$path" 2> /dev/null || true
+    # Ask rather than trust the exit status, which lies on some versions.
+    case "$(tmutil isexcluded "$path" 2> /dev/null)" in
+      *Excluded*) say "$path" ;;
+      *) warn "could not exclude $path (not fatal, backups just carry more)" ;;
+    esac
+  done
+}
+
+# Waits up to $1 seconds for the share to show up in the mount table.
+wait_for_mount() {
+  local waited=0
+  while [ "$waited" -lt "$1" ]; do
+    if mount | grep -q "/Volumes/$SHARE_NAME"; then
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+mount_share() {
+  local password="$1" url
+
+  # Password in the URL so Finder mounts without prompting
+  url="smb://$SMB_USER:$password@$LOOPBACK_IP/$SHARE_NAME"
+
+  if [ "$NO_AUTOMOUNT" = "1" ]; then
+    step "Not mounting the share (--no-automount)"
+    note "mount it yourself with: open 'smb://$SMB_USER@$LOOPBACK_IP/$SHARE_NAME'"
+    return 0
+  fi
+
+  step "Mounting the share"
+  open "$url" 2> /dev/null || true
+
+  if wait_for_mount 90; then
+    say "mounted at /Volumes/$SHARE_NAME"
+    return 0
+  fi
+
+  # Finder may still have asked, or the tunnel may not be up yet.
+  note "not mounted yet. Mount it whenever you like with:"
+  note "  open 'smb://$SMB_USER@$LOOPBACK_IP/$SHARE_NAME'"
+  note "and the share password is: $password"
+}
+
+verify() {
+  step "Checking the connection"
+
+  local out="$WORK_DIR/verify.log"
+  if client_handshake > "$out" 2>&1; then
+    say "mutual TLS to $SSH_HOST:$REMOTE_TLS_PORT works"
+  else
+    warn "could not complete the TLS handshake to $SSH_HOST:$REMOTE_TLS_PORT"
+    note "last lines of the attempt:"
+    tail -5 "$out" | sed 's/^/      /'
+    note "if the server just started, wait a few seconds and try:"
+    note "  nc -z $SSH_HOST $REMOTE_TLS_PORT"
+    return 0
+  fi
+
+  if nc -z -G 5 "$LOOPBACK_IP" "$LOCAL_PORT" 2> /dev/null; then
+    say "local tunnel is accepting connections"
+  else
+    warn "nothing is listening on $LOOPBACK_IP:$LOCAL_PORT yet"
+    note "check $LOG_FILE"
+  fi
+}
+
+# ---------------------------------------------------------------- finish ----
+
+print_instructions() {
+  local smb_password="$1" backup_password="$2"
+
+  cat <<BANNER
+
+${GREEN}${BOLD}Setup is complete.${RESET}
+
+${BOLD}Write this down now.${RESET} It is not stored anywhere you can read it back,
+and losing it means losing the backups.
+
+  Backup password     ${BOLD}$backup_password${RESET}
+                      (use this when Time Machine asks to encrypt the disk)
+
+  Share            smb://$LOOPBACK_IP/$SHARE_NAME
+  Share username   $SMB_USER
+  Share password   $smb_password
+                   (tick "Remember this password in my keychain" when Finder asks)
+
+${BOLD}Turn on Time Machine${RESET}
+
+  1. Open System Settings, then General, then Time Machine
+  2. Click Add Backup Disk and choose $SHARE_NAME
+  3. Turn on Encrypt Backup and enter the backup password above
+  4. Click Done. The first backup will take a while
+
+BANNER
+
+  if [ "$NO_SSH" != "1" ]; then
+    cat <<BANNER
+  Server files: $REMOTE_CONF_DIR on $SSH_HOST
+  Backups live in $REMOTE_DATA_DIR on the server
+BANNER
+  fi
+
+  if [ "$MULTIUSER" = "1" ]; then
+    local admin_state
+    if [ "$ADMIN" = "1" ]; then
+      admin_state="  The admin page is running at ${BOLD}http://$LOOPBACK_IP:$ADMIN_LOCAL_PORT/${RESET} on this Mac."
+    else
+      admin_state="  The admin page is off. Switch it on with:
+
+    sudo launchctl enable system/$ADMIN_LABEL
+    sudo launchctl bootstrap system $LAUNCHD_DIR/$ADMIN_LABEL.plist
+
+  then open ${BOLD}http://$LOOPBACK_IP:$ADMIN_LOCAL_PORT/${RESET} on this Mac."
+    fi
+
+    cat <<BANNER
+
+${BOLD}Adding other people${RESET}
+
+$admin_state
+
+  It lists the shares and how much each is using, and the Add button creates
+  one and gives you an invitation code to send.
+
+  To turn the page off:
+
+    sudo launchctl bootout system/$ADMIN_LABEL
+    sudo launchctl disable system/$ADMIN_LABEL
+
+  The user then runs the installer with the enroll code:
+
+    ./install.sh --server $SSH_HOST --enroll <code>
+BANNER
+  fi
+
+  printf '\n'
+}
+
+print_instructions_no_ssh() {
+  local backup_password="$1"
+
+  cat <<BANNER
+
+${GREEN}${BOLD}This Mac is ready. One step is left, which the server owner must do.${RESET}
+
+Your certificate is on your Desktop:
+
+  ${BOLD}$CLIENT_CERT_EXPORT${RESET}
+
+${BOLD}Send that file to the server owner${RESET} and ask them to run:
+
+  cat $(basename "$CLIENT_CERT_EXPORT") >> $REMOTE_CONF_DIR/client-certs.pem
+  cd $REMOTE_CONF_DIR && docker compose kill -s HUP tls
+
+${BOLD}Then, once they confirm${RESET}
+
+  1. Ask them for the share password
+  2. Run: open 'smb://$SMB_USER@$LOOPBACK_IP/$SHARE_NAME'
+  3. Enter the share password, tick "Remember this password in my keychain"
+  4. System Settings, then General, then Time Machine
+  5. Add Backup Disk, choose $SHARE_NAME
+  6. Turn on Encrypt Backup with the password below
+
+  Restoring rather than starting fresh? Skip 4 to 6. Open
+  <your mac>.sparsebundle inside the share and use Migration Assistant.
+
+${BOLD}Write this down now.${RESET} It is yours alone, the server does not have it,
+and losing it means losing this Mac's backups.
+
+  Backup password  ${BOLD}$backup_password${RESET}
+
+  Tunnel logs:     $LOG_FILE
+
+BANNER
+}
+
+# --recovery: everything is set up, but you are here to read the backup, not to
+# start a new one, so say nothing about turning Time Machine on.
+print_instructions_restore() {
+  local smb_password="$1"
+
+  cat <<BANNER
+
+${GREEN}${BOLD}Ready to restore.${RESET} The tunnel is installed and the share is mounted.
+
+  Share password   $smb_password
+
+${BOLD}Open the backup${RESET}
+
+  The share is not the backup. Time Machine keeps everything inside a
+  sparsebundle, and Migration Assistant will not open one for you.
+
+  1. In Finder, open smb://$LOOPBACK_IP/$SHARE_NAME
+  2. Double-click <your mac>.sparsebundle
+  3. Enter the backup password if you encrypted it
+  4. It mounts as "Time Machine Backups"
+
+${BOLD}Then restore${RESET}
+
+  Open Migration Assistant from the Utilities folder, choose to transfer from
+  a Time Machine backup, and pick "Time Machine Backups".
+
+  Time Machine has deliberately not been set up on this mac, so nothing will
+  start backing up over your restore. The install itself is complete: when you
+  do want this mac backing up, add $SHARE_NAME in System Settings, General,
+  Time Machine, and tick Encrypt Backup.
+
+  Tunnel logs: $LOG_FILE
+
+BANNER
+}
+
+# ------------------------------------------------------------- uninstall ----
+
+uninstall() {
+  printf '%s%sfez uninstaller%s\n\n' "$BOLD" "$GREEN" "$RESET"
+  say "This removes, on this Mac only:"
+  say ""
+  say "  the three launchd jobs and their plists"
+  say "  $CONF_DIR, including your client key and certificate"
+  say "  the $LOOPBACK_IP alias on lo0"
+  say "  $LOG_FILE"
+  say ""
+  say "Your backups, and the server holding them, are not touched. Without the"
+  say "key in $CONF_DIR this Mac can no longer connect, so keep a"
+  say "note of your backup password before going further."
+  say ""
+  printf '    Type yes to continue: '
+  local reply
+  read -r reply
+  [ "$reply" = "yes" ] || die "nothing was changed"
+
+  sudo -v || die "this needs administrator access on this Mac"
+
+  step "Stopping the tunnels"
+  local label
+  for label in "$TUNNEL_LABEL" "$ADMIN_LABEL" "$LOOPBACK_LABEL"; do
+    sudo launchctl bootout "system/$label" 2> /dev/null || true
+    # Clear the disabled flag too, or a later reinstall starts out blocked.
+    sudo launchctl enable "system/$label" 2> /dev/null || true
+    if [ -f "$LAUNCHD_DIR/$label.plist" ]; then
+      sudo rm -f "$LAUNCHD_DIR/$label.plist"
+      say "removed $label"
+    fi
+  done
+
+  step "Unmounting shares"
+  local point found=0
+  for point in $(mount | awk -v m="@$LOOPBACK_IP/" 'index($1, m) { for (i = 1; i <= NF; i++) if ($i == "on") { print $(i + 1); break } }'); do
+    if umount "$point" 2> /dev/null || sudo umount "$point" 2> /dev/null; then
+      say "unmounted $point"
+    else
+      warn "could not unmount $point; Time Machine may still be using it"
+    fi
+    found=1
+  done
+  [ "$found" = "1" ] || say "nothing mounted from $LOOPBACK_IP"
+
+  step "Removing files"
+  sudo rm -rf "$CONF_DIR"
+  sudo rm -f "$LOG_FILE"
+  say "$CONF_DIR and $LOG_FILE"
+
+  step "Removing the loopback alias"
+  if /sbin/ifconfig lo0 2> /dev/null | grep -q "$LOOPBACK_IP"; then
+    sudo /sbin/ifconfig lo0 -alias "$LOOPBACK_IP" 2> /dev/null || true
+    say "removed $LOOPBACK_IP from lo0"
+  else
+    say "$LOOPBACK_IP was not there"
+  fi
+
+  # Best effort: macOS may have saved the share password when it mounted.
+  local n=0
+  while [ "$n" -lt 10 ] && security delete-internet-password -s "$LOOPBACK_IP" > /dev/null 2>&1; do
+    n=$((n + 1))
+  done
+  [ "$n" = "0" ] || say "removed $n saved password(s) from your keychain"
+
+  cat <<BANNER
+
+${GREEN}${BOLD}Done.${RESET} This Mac is back to how it was.
+
+${BOLD}Two things this did not do${RESET}
+
+  Time Machine may still list the backup disk. Remove it in System Settings,
+  General, Time Machine, or it will keep trying and failing.
+
+  The server still trusts this Mac's certificate. If you are finished with it,
+  revoke it on the admin page, or remove its block from
+  $REMOTE_CONF_DIR/client-certs.pem and reload with:
+
+    cd $REMOTE_CONF_DIR && docker compose kill -s HUP tls
+
+BANNER
+}
+
+# --recovery swaps the closing instructions and changes nothing else.
+finish() {
+  exclude_log_churn
+
+  if [ "$RECOVERY" = "1" ]; then
+    print_instructions_restore "$1"
+  else
+    print_instructions "$1" "$2"
+  fi
+}
+
+# ------------------------------------------------------------------ main ----
+
+main() {
+  parse_args "$@"
+
+  if [ "$LOCAL" = "1" ]; then
+    [ "$(id -u)" = "0" ] || die "--local sets this machine up, so run it as root"
+    upload_installer
+    setup_server
+    cat <<BANNER
+
+${GREEN}${BOLD}Server set up at $SSH_HOST:$REMOTE_TLS_PORT.${RESET}
+
+nginx will not start until it trusts at least one client, so this is not
+finished yet. On each Mac:
+
+    ./install.sh $SSH_HOST --no-ssh
+
+then add the certificate it leaves on the Desktop and start the containers:
+
+    cat fez-client-*.pem >> $REMOTE_CONF_DIR/client-certs.pem
+    cd $REMOTE_CONF_DIR && docker compose up -d
+
+BANNER
+    return 0
+  fi
+
+  preflight
+
+  if [ "$UNINSTALL" = "1" ]; then
+    uninstall
+    return 0
+  fi
+
+  printf '%s%sfez installer %s%s\n' "$BOLD" "$GREEN" "$FEZ_VERSION" "$RESET"
+  if [ -n "$ENROLL_CODE" ]; then
+    note "server: $SSH_HOST:$REMOTE_TLS_PORT (joining with an invitation)"
+  elif [ "$NO_SSH" = "1" ]; then
+    note "server: $SSH_HOST:$REMOTE_TLS_PORT (not logging in, --no-ssh)"
+  else
+    note "server: $SSH_USER@$SSH_HOST:$SSH_PORT"
+  fi
+
+  # Nothing below this point is wanted: no certificate, no plists, no mount,
+  # and so no sudo either.
+  if [ "$SERVER_ONLY" = "1" ]; then
+    ssh_connect
+    upload_installer
+    setup_server
+    cat <<BANNER
+
+${GREEN}${BOLD}Server updated.${RESET} Nothing on this mac was changed.
+
+  Containers were recreated where their configuration changed. Certificates,
+  share passwords and the backups in $REMOTE_DATA_DIR were left alone.
+
+BANNER
+    return 0
+  fi
+
+  step "Checking for administrator access"
+  say "If you are asked for a password here, it is the login password for this"
+  say "Mac, the one you use to unlock it. Not your server password."
+  note "needed to install the tunnel into /etc and /Library/LaunchDaemons"
+  sudo -v || die "this installer needs administrator access on this Mac"
+  say "ok"
+
+  local backup_password
+  backup_password="$(uuidgen)"
+
+  if [ -n "$ENROLL_CODE" ]; then
+    generate_client_identity
+    fetch_server_certificate
+    submit_enrollment
+    install_launchd_jobs
+    wait_until_trusted
+    mount_share "$ENROLLED_PASSWORD"
+    finish "$ENROLLED_PASSWORD" "$backup_password"
+    return 0
+  fi
+
+  if [ "$NO_SSH" = "1" ]; then
+    generate_client_identity
+    fetch_server_certificate
+    install_launchd_jobs
+    export_client_cert
+    exclude_log_churn
+    print_instructions_no_ssh "$backup_password"
+    return 0
+  fi
+
+  ssh_connect
+  generate_client_identity
+  register_client_cert
+  upload_installer
+  setup_server
+  fetch_server_certificate
+  install_launchd_jobs
+
+  local smb_password
+  smb_password="$(fetch_share_password)"
+
+  verify
+  mount_share "$smb_password"
+  finish "$smb_password" "$backup_password"
+}
+
+main "$@"

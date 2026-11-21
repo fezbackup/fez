@@ -1,0 +1,7 @@
+#!/bin/sh
+# Ends s6-svscan when admin-ui writes the fifo, so the container restarts and
+# samba rebuilds smb.conf with the new share. s6 supervises this script.
+exec 3<> /signals/samba
+while read -r _ <&3; do
+  s6-svscanctl -t /etc/s6
+done

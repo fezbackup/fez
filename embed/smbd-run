@@ -1,0 +1,8 @@
+#!/bin/sh
+
+# Replaces the image's /etc/s6/smbd/run to log to the docker stack.
+DEBUG_LEVEL="${DEBUG_LEVEL:-1}"
+exec /usr/sbin/smbd --foreground --no-process-group --debug-stdout \
+  --debuglevel="${DEBUG_LEVEL}" \
+  --option="log file=/dev/stdout" \
+  --option="max log size=0" < /dev/null

@@ -1,0 +1,37 @@
+  tls:
+    image: nginx:alpine
+    container_name: fez-tls
+    hostname: tls
+    restart: always
+    logging: *fez-logging
+    # nginx resolves what it proxies to at config load, so it starts last.
+    depends_on:
+${TLS_DEPENDS}
+    user: "nobody"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # Exports NGINX_LOCAL_RESOLVERS from the container's resolv.conf.
+      - NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
+      # Use /tmp, as we are running as "nobody".
+      - NGINX_ENVSUBST_OUTPUT_DIR=/tmp
+    command: ["nginx", "-c", "/tmp/nginx.conf", "-g", "daemon off;"]
+    tmpfs:
+      - /tmp
+    ports:
+      - "${TLS_PORT}:8443"
+    volumes:
+      - /etc/fez/nginx.conf.template:/etc/nginx/templates/nginx.conf.template:ro
+      # Reloads nginx when admin-ui pokes the fifo.
+      - /etc/fez/nginx-reload.sh:/docker-entrypoint.d/99-fez-reload.sh:ro
+      - /etc/fez/signals/nginx:/signals/nginx
+      - /etc/fez/server-cert.pem:/etc/fez/server-cert.pem:ro
+      - /etc/fez/server-key.pem:/etc/fez/server-key.pem:ro
+      - /etc/fez/client-certs.pem:/etc/fez/client-certs.pem:ro
+      - /etc/fez/admin-certs.pem:/etc/fez/admin-certs.pem:ro
+    networks:
+      - smb
+      - control

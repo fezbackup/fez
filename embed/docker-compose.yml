@@ -1,0 +1,35 @@
+x-logging: &fez-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "2"
+
+services:
+  timemachine:
+    image: mbentley/timemachine:smb
+    container_name: fez-timemachine
+    hostname: timemachine
+    restart: always
+    logging: *fez-logging
+    environment:
+      - EXTERNAL_CONF=/etc/timemachine-conf
+      - SET_PERMISSIONS=false
+      - HIDE_SHARES=yes
+    volumes:
+      - /tm:/opt
+      - /etc/fez/users:/etc/timemachine-conf:ro
+      # Sends samba's log to stdout so docker compose logs handle them.
+      - /etc/fez/smbd-run:/etc/s6/smbd/run:ro
+      # Restarts the container when admin-ui pokes the fifo.
+      - /etc/fez/samba-reload:/etc/s6/reload/run:ro
+      - /etc/fez/signals/samba:/signals/samba
+      # Disable mDNS and NetBIOS, not used by us.
+      - /etc/fez/s6-down:/etc/s6/avahi/down:ro
+      - /etc/fez/s6-down:/etc/s6/dbus/down:ro
+      - /etc/fez/s6-down:/etc/s6/nmbd/down:ro
+    tmpfs:
+      - /run/samba
+      # Samba log files are capped and autorotated, keep them off our disk.
+      - /var/log/samba
+    networks:
+      - smb

@@ -1,0 +1,56 @@
+
+  # Unauthenticated internet-facing endpoint for enroll codes.
+  enroll-queue:
+    image: node:22-alpine
+    container_name: fez-enroll-queue
+    hostname: enroll-queue
+    restart: always
+    logging: *fez-logging
+    command: ["node", "/app/enroll-queue.js"]
+    user: "nobody"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /etc/fez/enroll-queue.js:/app/enroll-queue.js:ro
+      - /etc/fez/enrollments.json:/etc/fez/enrollments.json:ro
+    networks:
+      - control
+
+  # Requires an admin cert to access, very privileged. Writes share config
+  # owns directories under /tm for other uids, and signals the other containers.
+  admin-ui:
+    image: node:22-alpine
+    container_name: fez-admin-ui
+    hostname: admin-ui
+    restart: always
+    logging: *fez-logging
+    depends_on:
+      - enroll-queue
+    command: ["node", "/app/admin-ui.js"]
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN # make new share dirs the correct uid
+      - DAC_READ_SEARCH # du across the 0700 dirs root does not own
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - ENROLL_QUEUE=http://enroll-queue:8001
+      - SERVER_ADDRESS=${HOST_ADDR}
+    volumes:
+      - /etc/fez/admin-ui.js:/app/admin-ui.js:ro
+      - /etc/fez/install.sh:/app/install.sh:ro
+      - /etc/fez/users:/etc/fez/users
+      - /etc/fez/client-certs.pem:/etc/fez/client-certs.pem
+      - /etc/fez/enrollments.json:/etc/fez/enrollments.json
+      - /etc/fez/signals/nginx:/signals/nginx
+      - /etc/fez/signals/samba:/signals/samba
+      - /tm:/tm # writable, for creating share folders
+      # Container logs for the admin page
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    networks:
+      - control

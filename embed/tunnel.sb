@@ -1,0 +1,22 @@
+(version 1)
+(deny default)
+
+(allow process-exec (literal "/usr/bin/openssl"))
+
+; Enough to load a dynamically linked binary plus this tunnel's own files.
+(allow file-read*
+       (literal "/")
+       ; /etc is a symlink to private/etc
+       (literal "/etc")
+       (subpath "/usr/lib")
+       (subpath "/usr/bin")
+       (subpath "/System/Library")
+       (subpath "/System/Volumes")
+       (literal "/private/etc/fez/client-cert.pem")
+       (literal "/private/etc/fez/server-ca.pem")
+       (literal "/private/etc/ssl/openssl.cnf")
+       (subpath "/dev/fd")
+       (literal "/dev/random")
+       (literal "/dev/urandom"))
+
+(allow network-outbound (remote ip "*:$REMOTE_TLS_PORT"))

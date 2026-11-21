@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$ADMIN_LABEL</string>
+  <key>Sockets</key>
+  <dict>
+    <key>Listener</key>
+    <dict>
+      <key>SockNodeName</key>
+      <string>$LOOPBACK_IP</string>
+      <key>SockServiceName</key>
+      <string>$ADMIN_LOCAL_PORT</string>
+      <key>SockType</key>
+      <string>stream</string>
+      <key>SockFamily</key>
+      <string>IPv4</string>
+    </dict>
+  </dict>
+  <key>inetdCompatibility</key>
+  <dict>
+    <key>Wait</key>
+    <false/>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <!-- after reading the key, openssl is run as the nobody user, in a seatbelt sandbox -->
+    <string>exec 4&lt; &lt;(/bin/cat $CONF_DIR/client-key.pem); exec /usr/bin/su -m nobody -c "exec /usr/bin/sandbox-exec -f $CONF_DIR/tunnel.sb $OPENSSL s_client -quiet -verify 5 -verify_return_error -connect $SSH_HOST:$REMOTE_TLS_PORT -servername $ADMIN_NAME -cert $CONF_DIR/client-cert.pem -key /dev/fd/4 -CAfile $CONF_DIR/server-ca.pem"</string>
+  </array>
+  <key>StandardErrorPath</key>
+  <string>$LOG_FILE</string>
+</dict>
+</plist>

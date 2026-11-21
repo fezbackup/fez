@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fez - Time Machine backups for $3/TB/month</title>
+<meta name="description" content="Back up your mac with Time Machine to an InterServer VPS that costs $3 per TB per month. One command sets up an encrypted backup server you own, reached over a mutually authenticated TLS tunnel. No subscription, no backup company.">
+<link rel="canonical" href="https://fezbackup.com/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="fez - Time Machine backups for $3 a month">
+<meta property="og:description" content="Back up your mac with Time Machine to a VPS you control, from $3 per TB per month. One command to set it up.">
+<meta property="og:url" content="https://fezbackup.com/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z' stroke='%238b98a8'/%3E%3Ccircle cx='11.5' cy='14.4' r='3.2' stroke='%233fb950'/%3E%3Cpath d='M11.5 12.8v1.6l1.4.9' stroke='%233fb950'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg:#ffffff; --panel:#f6f7f9; --ink:#1f2933; --bright:#0b1f33;
+    --muted:#5a6673; --line:#d3d9e0; --accent:#0b3d6b; --gold:#8a6a1f;
+    --cyan:#0b3d6b; --amber:#8a6a1f;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.72 Georgia,"Times New Roman",Times,serif;
+  }
+  .wrap { max-width:46rem; margin:0 auto; padding:0 1.75rem 2rem; }
+
+  header {
+    padding:3rem 0 2rem; margin-bottom:2.5rem;
+    border-bottom:3px double var(--accent);
+  }
+  h1 {
+    font-size:2.3rem; font-weight:700; margin:0 0 1rem; color:var(--accent);
+    letter-spacing:.01em; font-variant:small-caps;
+  }
+  .logo { width:1em; height:1em; vertical-align:-.12em; margin-right:.4rem; }
+  .logo .cloud { stroke:var(--accent); stroke-width:1.6; }
+  .logo .clock { stroke:var(--gold); stroke-width:1.6; }
+  .cursor { display:none; }
+  .lede { font-size:1.06rem; color:var(--ink); margin:0; }
+
+  h2 {
+    font-size:1.05rem; font-weight:700; color:var(--accent);
+    text-transform:uppercase; letter-spacing:.09em;
+    margin:3rem 0 1.1rem; padding-bottom:.5rem;
+    border-bottom:1px solid var(--line);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  }
+  h3 {
+    font-size:1.02rem; font-weight:700; color:var(--bright); margin:1.6rem 0 .4rem;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  }
+  p { margin:0 0 .95rem; }
+  a { color:var(--accent); text-decoration:underline; text-underline-offset:2px; }
+  strong { color:var(--bright); font-weight:700; }
+  code {
+    font-family:"Courier New",Courier,monospace; font-size:.92em;
+    color:var(--bright); background:var(--panel); padding:.05em .3em;
+    border:1px solid var(--line);
+  }
+
+  .expand-all {
+    float:right; font-family:-apple-system,system-ui,sans-serif; font-size:.74rem;
+    text-transform:uppercase; letter-spacing:.09em; background:none;
+    border:0; padding:0; cursor:pointer; color:var(--accent); font-weight:700;
+  }
+
+  pre {
+    background:var(--panel); border:1px solid var(--line);
+    border-left:4px solid var(--accent);
+    padding:1rem 1.15rem; overflow-x:auto; margin:0 0 1.15rem;
+    font:.86rem/1.6 "Courier New",Courier,monospace;
+  }
+  pre code { border:0; background:none; padding:0; color:var(--bright); }
+  pre.diagram { color:var(--muted); border-left-color:var(--gold); font-size:.8rem; }
+  pre.diagram b { color:var(--bright); font-weight:700; }
+
+  details {
+    border:1px solid var(--line); background:var(--bg);
+    margin:0 0 -1px; padding:0 1.25rem;
+  }
+  details[open] { padding-bottom:.9rem; background:var(--panel); }
+  summary {
+    cursor:pointer; padding:.85rem 0; color:var(--accent); list-style:none;
+    font-size:.97rem; font-weight:700;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  }
+  summary::-webkit-details-marker { display:none; }
+  summary::before { content:"\25B8\00a0\00a0"; color:var(--gold); }
+  details[open] > summary::before { content:"\25BE\00a0\00a0"; }
+
+  table { border-collapse:collapse; width:100%; margin:0 0 1.25rem; font-size:.93rem; }
+  th, td { text-align:left; padding:.6rem .7rem; border:1px solid var(--line); }
+  th {
+    background:var(--accent); color:#fff; font-weight:700; font-size:.76rem;
+    text-transform:uppercase; letter-spacing:.07em;
+    font-family:-apple-system,system-ui,sans-serif;
+  }
+  tbody tr:nth-child(even) { background:var(--panel); }
+  td:first-child { font-weight:700; color:var(--bright); }
+
+  .steps { counter-reset:step; list-style:none; padding:0; }
+  .steps > li {
+    counter-increment:step; position:relative; padding:1.1rem 0 1.1rem 3.2rem;
+    border-bottom:1px solid var(--line);
+  }
+  .steps > li::before {
+    content:counter(step) "."; position:absolute; left:0; top:1.1rem;
+    color:var(--gold); font-weight:700; font-size:1rem; width:2.4rem;
+    text-align:right;
+  }
+  .steps h3 { margin-top:0; }
+
+  footer {
+    margin-top:3.5rem; padding:1.5rem 0 3rem; border-top:3px double var(--accent);
+    color:var(--muted); font-size:.84rem;
+  }
+  .muted { color:var(--muted); }
+
+  .codeblock { position:relative; margin:0 0 1.15rem; }
+  .codeblock > pre { margin-bottom:0; }
+  pre > code { display:block; padding-right:2.6rem; }
+  .copy {
+    position:absolute; top:.45rem; right:.45rem; width:1.85rem; height:1.85rem;
+    padding:0; display:grid; place-items:center; cursor:pointer; opacity:0;
+    background:var(--bg); color:var(--muted); border:1px solid var(--line);
+  }
+  .codeblock:hover .copy, .copy:focus-visible { opacity:1; }
+  .copy:hover { color:var(--accent); border-color:var(--accent); }
+  .copy.copied { color:#fff; background:var(--accent); border-color:var(--accent); opacity:1; }
+  .copy svg { width:.95rem; height:.95rem; display:block; }
+  @media (hover:none) { .copy { opacity:.7; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1><svg class="logo" viewBox="0 0 24 24" fill="none" stroke-width="1.7"
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path
+      class="cloud" d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><circle
+      class="clock" cx="11.5" cy="14.4" r="3.2"/><path class="clock"
+      d="M11.5 12.8v1.6l1.4.9"/></svg>fez<span class="cursor" aria-hidden="true"></span></h1>
+  <p class="lede">fez is a simple script that lets you configure your mac to back up via Time Machine to an <a href="https://www.interserver.net/r/925312?url=https://www.interserver.net/vps/storage.html" rel="sponsored nofollow">InterServer storage VPS</a> for $3/TB per month.</p>
+</header>
+
+<main>
+
+<h2>details<button type="button" class="expand-all">[+] all</button></h2>
+
+<details>
+<summary>what this is</summary>
+
+<p>Time Machine is Apple's integrated backup solution in macOS that can back up to a local network SMB server. Normally that server sits in your house or office, which does not help if you are traveling, your house floods, or someone walks off with the mac and the drive together.</p>
+
+<p>fez puts the drive on a rented server hosted by a server provider like <a href="https://www.interserver.net/r/925312?url=https://www.interserver.net/dedicated/large-storage-servers.html" rel="sponsored nofollow">InterServer</a>. You pay for the server and run one command on your mac that sets up the server, locks it down so only your mac can reach it, and hands Time Machine a backup disk.</p>
+
+<p>Time Machine encrypts its backups, so your server provider or anyone else who gains access to your server <b>cannot ever see your data.</b></p>
+
+<p>fez is not a service. You rent the server, you own the data, and there is nothing to cancel. If this project disappears tomorrow your backups keep running. If you want to change server providers, you can do it effortlessly. fez is merely a script that configures your mac and/or server and then goes away.</p>
+</details>
+
+<details>
+<summary>how it works</summary>
+
+<p>Time Machine backs up to SMB shares. SMB on the open internet is a bad idea, so fez does not put it there. The share is wrapped in a mutually-authenticated TLS tunnel using pinned certificates, and your mac talks to a loopback address that behaves like a file server on the local network. This all works without installing any new software on your mac, by configuring the a sandboxed openssl process on loopback as an inetd service.</p>
+
+<pre class="diagram"><b>macOS</b>
+  <b>Time Machine</b>
+      |
+      |   <i>SMB</i>
+      v
+  <b>127.0.0.2:445</b>      launchd socket, inetd process
+      |
+      |   <i>mTLS 1.2+</i>
+      v
+  <b>VPS:443</b>            nginx stream, ssl_verify_client on
+      |   <i>SMB</i>
+      v
+  <b>timemachine:445</b>    samba + vfs_fruit, docker network only, requires share pwd
+      |
+      v
+     <b>/tm</b>             sparsebundles land here</pre>
+
+<h3>on your mac</h3>
+<p>Two launchd jobs are added. The first job runs at boot and adds the <code>127.0.0.2</code> loopback alias. The other is an inetd-style socket listener: when something connects to <code>127.0.0.2:445</code>, launchd spawns <code>/usr/bin/openssl s_client</code> with the socket wired to its stdin and stdout. That process carries the mTLS connection (with pinned certificates) for as long as the SMB session lasts and then exits. smbfs tends to re-use a single TCP connection, so you generally only see one <code>openssl</code> process.</p>
+<p>To reiterate: <b>no new software is ever installed on your mac</b>; the script configures some things, then Time Machine and <code>openssl</code> do all the heavy lifting. See <a href='#how-to-remove'>how do I remove it from my mac?</a> for how to remove the configuration.</p>
+
+<h3>on the VPS</h3>
+<p>Docker Compose runs two containers. <code>mbentley/timemachine</code> is Samba with <code>vfs_fruit</code> set up as a Time Machine target, listening only on the Docker network. In front of it, nginx uses its <code>stream</code> module as a TCP proxy: terminate TLS on 443, check the client certificate, forward the raw bytes to Samba. 443 is the only externally-bound port.</p>
+
+<h3>authentication</h3>
+<p>The client certificate is generated on your mac at install-time and lives in <code>/etc/fez</code> with the key only readable by root. The nginx server allows only connections with the certificates of macs you've configured. Behind that, each Samba share has its own password, generated once per server, which is saved in the keychain.</p>
+<p>Your mac checks the server the same way, against the certificate it collected over SSH during install or enroll.</p>
+
+<h3>encryption</h3>
+<p>There are two independent layers of encryption here. Time Machine encrypts the backup on your mac, with a password only you have. The <code>openssl</code> tunnel encrypts the connection separately. The hosting company sees encrypted backup data arriving over an encrypted connection.</p>
+
+<h3>backing up other people (<code>--multiuser</code>)</h3>
+<p>Multi-user mode is optional, and off unless you specify it during install. This enables an admin page and an invitation flow, to make it easier to onboard a friend or family member without giving them SSH access to the server. There is still just one port exposed: nginx reads the name out of the TLS hello with <code>ssl_preread</code> and routes the connection to one of two additional containers:</p>
+
+<pre class="diagram"><b>VPS:443</b>
+  |
+  +-- <b>fez.internal</b>          client cert required   &rarr;  samba
+  |
+  +-- <b>admin.fez.internal</b>    admin cert required    &rarr;  admin-ui
+  |
+  +-- <b>public.fez.internal</b>   no cert required       &rarr;  enroll-queue</pre>
+
+<p>Both <code>admin-ui</code> and <code>enroll-queue</code> are stock <code>node:22-alpine</code> with a single script file from the installer mounted into each.</p>
+
+<p><code>enroll-queue</code> is the only thing on the server that talks to strangers, so it is built to be boring: no disk writes, no capabilities, not root, read only filesystem, no dependencies beyond the Node standard library, and one accepted request. Its own script is the only thing mounted into that container, so it cannot see the certificates, the share configuration, or the backups. It holds invitation codes in memory and notifies the admin-ui process when a valid enroll occurs.</p>
+
+<p><code>admin-ui</code> is the opposite; this container requires admin authentication. It writes share configuration, owns directories under <code>/tm</code>, and signals the other containers, so it runs as root in the host PID namespace. nginx only routes to it after checking a certificate from a separate bundle (<code>/etc/fez/admin-certs.pem</code>) which by defailt contains the certificate of the mac that set the server up.</p>
+</details>
+
+<details>
+<summary>what it costs</summary>
+
+<p><a href="https://www.interserver.net/r/925312?url=https://www.interserver.net/vps/storage.html" rel="sponsored nofollow">InterServer</a> rents storage VPS servers by the slice at $3 per TB per month. You pay for raw storage, so the price does not change based on how many macs you back up or how often.</p>
+
+<table>
+  <thead>
+    <tr><th>Storage</th><th>Price</th><th>Good for</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1 TB</td><td>$3 per month</td><td>A laptop with a 256 or 512 GB drive</td></tr>
+    <tr><td>2 TB</td><td>$6 per month</td><td>A 1 TB drive, or two macs</td></tr>
+    <tr><td>4 TB</td><td>$12 per month</td><td>Several macs, or years of history</td></tr>
+  </tbody>
+</table>
+
+<p>Storage servers are available in Los Angeles, Dallas, and New Jersey.</p>
+
+<p class="muted">Time Machine keeps old versions of files, so it wants more space than the drive you are backing up. Two to three times the size of your mac's drive is a comfortable target, which for most laptops means the 1 TB tier is enough.</p>
+</details>
+
+<h2 id="start">setting it up</h2>
+
+<ol class="steps">
+
+<li>
+<h3>rent the server</h3>
+<p>Sign up for an <a href="https://www.interserver.net/r/925312?url=https://www.interserver.net/vps/storage.html" rel="sponsored nofollow" target="_blank">InterServer Storage VPS</a> and pick the number of slices you want. When it asks for an operating system, I recommend choosing <strong>Debian</strong>, and <strong>choose a strong, random root password</strong>.</p>
+<p class="muted">I usually generate my passwords with <code>openssl rand -hex 16</code>. Store the password somewhere safe, or write it down.</p>
+</li>
+
+<li>
+<h3>run the installer</h3>
+<p>Open Terminal on your mac (press &#x2318;-Space, type Terminal, press Return) and run these lines to download the script:</p>
+<pre><code>curl -o ~/Downloads/ https://fezbackup.com/install_fez.sh</code></pre>
+<p>Now run the script, providing your own server IP as the last argument:</p>
+<pre><code>bash ~/Downloads/install_fez.sh 1.2.3.4</code></pre>
+<p>The script asks for your mac's password so it can install a launchd job, and then for the server's root password (unless you've set up an ssh keypair already). It takes a few minutes, mostly waiting on the server to install Docker.</p>
+<p class="muted">This is a plain shell script with no dependencies. It is idempotent, so if an install fails you can just re-run it.</p>
+<p class="muted">If you are going to back up other people's macs too, add <code>--multiuser</code>. That installs an admin interface for managing user shares and enroll codes. You can always start without it and re-run with it later.</p>
+</li>
+
+<li>
+<h3>write down the backup password</h3>
+<p>When complete, it prints the share details and suggests a backup password:</p>
+<pre><code>Share password      ee0f23088a66941e70992e917e470524
+Backup password     2EE5CE33-0672-4858-B3D1-2D479AFCEA99
+</code></pre>
+<p>Store the "Backup password" somewhere safe, a password manager or paper. After configuration, Time Machine encrypts your backups with it so that <strong>nobody can recover your backups without it</strong> (including you).</p>
+<p class="muted">The installer also prints a share password. After setup should never need to use it, since macOS keeps it in your keychain. If you lose it, you can find it on the server under <code>/etc/fez/$SHARE/share.conf</code>.</p>
+<p class="muted">You <i>can</i> just ignore the suggested backup password and supply your own, but you should choose something complex enough to be resistant to offline bruteforcing.</p>
+</li>
+
+<li>
+<h3>point Time Machine at it</h3>
+<p>The installer should have mounted the share when done. Next, open <strong>System Settings &rarr; General &rarr; Time Machine</strong>, click <strong>Add Backup Disk &rarr; TimeMachine</strong>, and turn on Encrypt Backup using the backup password. You will be asked for the share password again, make sure to select <strong>"Save password in keychain"</strong>.</p>
+<p>The first backup copies your whole drive, so expect to leave it running for at least a few hours or overnight. After that Time Machine only sends what changed.</p>
+</li>
+
+<li>
+<h3>disable sshd on the server (optional, recommended)</h3>
+<p>In general, requiring a complex, random ssh password is "good enough" to survive on the internet, but your ssh server will still inevitably receive a lot of stray login attempts. As the server admin it is a good idea to keep sshd disabled when you aren't using it for setting up or restoring clients.
+<details>
+<summary>click here to see how to do that</summary>
+To disable ssh, first ssh into the server as root and run:</p>
+<pre><code>systemctl disable --now sshd</code></pre>
+<p>When you want to use ssh to access your server again: log into InterServer's control panel, click VPS -> Manage, and then click the "View Desktop" button on the right, which will give you access to the out-of-band console TTY. Login as <code>Username: root</code> and enter your root password, and then re-enable sshd:</p>
+<pre><code>systemctl enable --now sshd</code></pre>
+<p class="muted">If you instead prefer to keep sshd running all the time, I recommend looking at disabling password login entirely in your <code>sshd_config</code> and setting up an SSH keypair.</p>
+</details>
+</li>
+
+</ol>
+
+<h2>questions</h2>
+<!-- 
+<details>
+<summary>what is exposed to the internet?</summary>
+<p>Port 443 on the server, and (optionally) SSH so you can administer it. Port 443 answers nothing unless the client presents your certificate, so a scanner that finds it learns only that something is listening. The installer takes <code>--tls-port</code> if you want it somewhere else.</p>
+</details> -->
+
+<details>
+<summary>can several people share one server?</summary>
+<p>Yes. By default, a single "timemachine" share is used - if you're backing up a couple personal devices an easy method is to just have them all in one share; you just run the script as normal.</p>
+
+<p>If you are trying to support different users, you can set them with their own shares so they can't see each others' backups. Each share is a separate Samba user with its own password and its own directory under <code>/tm</code>.</p>
+
+<p>Run the install script with <code>--multiuser</code> to enable this, then:</p>
+
+<p><strong>1. The admin adds the share from the admin page.</strong> First, enable the admin page on your mac:</p>
+<pre><code>sudo launchctl enable system/com.fezbackup.admin
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.fezbackup.admin.plist</code></pre>
+<p>Or install with <code>--admin</code> instead of <code>--multiuser</code>, which registers this mac as an administrator on the server and leaves the page switched on for you. It is also how you add a second administrative mac.</p>
+<p>Then browse to the admin page at: <a href="http://127.0.0.2:8443/">http://127.0.0.2:8443/</a>:</p>
+<p><img style='width:100%;' src='admin-ui.png' /></p>
+<p>That page lists the shares and how much disk each is using. Under <strong>add a share</strong>, type <code>alice</code>, optionally give her a quota, and submit. It creates the share, generates the password, and prints a banner with the install_fez.sh script link, and the command Alice needs to run:</p>
+<pre><code>./install.sh --server 1.2.3.4 --enroll a00ffee9fafccd7953cef4e90fee07fd</code></pre>
+
+<p><strong>2. Alice runs the enroll command.</strong> Her mac generates its certificate, hands it over along with the enroll code, gets back her share name and password, and proceeds with the local setup process.</p>
+
+<p>If Alice's mac later dies, her certificate is also gone. The admin will need to send her a new enrollment code by clicking the <strong>new invitation</strong> link on the admin page.</p>
+
+</details>
+
+<details>
+<summary>how do I restore from my backup?</summary>
+<p><strong>On a new or erased mac.</strong> Run the fez installer on it the same way you did the first time, which puts the tunnel back and mounts the share.</p>
+<p>The share is not the backup. Time machine keeps everything inside a sparsebundle disk image, and Migration Assistant will not look inside one for you, so open it first:</p>
+<ol>
+<li>In Finder press Command-K and connect to <code>smb://127.0.0.2/&lt;share&gt;</code>, giving the share password when it asks.</li>
+<li>Double-click <code>&lt;your mac&gt;.sparsebundle</code> in the window that opens.</li>
+<li>If you turned on Encrypt Backup, it now asks for the backup password, which is the other one.</li>
+<li>It mounts as a disk called <strong>Time Machine Backups</strong>.</li>
+</ol>
+<p>Then open Migration Assistant from the Utilities folder, choose to transfer from a Time machine backup, and pick <strong>Time Machine Backups</strong>. If it shows nothing, the sparsebundle is not mounted and step 2 did not happen.</p>
+<p><strong>If you only want to read the backup</strong>, add <code>--recovery</code>:</p>
+<pre><code>/tmp/install_fez.sh &lt;server address&gt; --recovery</code></pre>
+<p>That does exactly the same install, but finishes by telling you how to open the sparsebundle instead of how to switch Time Machine on, so a mac you are restoring onto does not start backing itself up halfway through. Nothing needs re-running afterwards: when you do want it backing up, add the share in System Settings &rarr; General &rarr; Time Machine.</p>
+<p>It does <strong>not</strong> work from the macOS Recovery environment. Recovery has no openssl, ruby or python, so the tunnel cannot be built there. Reinstall macOS, create a temporary account, boot into the full system, and restore from there.</p>
+
+<p><strong>If you joined with an invitation code.</strong> The certificate that let you in lived on the mac, and is now gone. Ask whoever runs the server for a new code: on the admin page that is the <strong>new invitation</strong> link on your row, and it hands back the same share password you already had. Then run one command on the new mac, or add <code>--recovery</code> to do it from Recovery:</p>
+<pre><code>/tmp/install_fez.sh --server &lt;server address&gt; --enroll &lt;new code&gt;</code></pre>
+<p>The old certificate keeps working until someone revokes it, so say something if the mac was stolen rather than broken: the admin can remove it under <strong>allowed clients</strong> on the admin page.</p>
+
+<p>Either way you need the backup password, since the backup is encrypted. Without it the files cannot be read, by you or anyone else.</p>
+</details>
+
+<details>
+<summary>what if I lose the backup password?</summary>
+<p>The backups are gone. Time Machine encryption has no recovery option, which is what makes it safe to keep backups on someone else's computer. The backup password is not stored or sent anywhere; it is just securely generated for your convenience. You can use a different password than the generated one if you'd like. In any case, I recommend writing it down.</p>
+</details>
+
+<details>
+<summary id="how-to-remove">how do I remove it from my mac?</summary>
+<p>Run the installer with <code>--uninstall</code>. It asks you to type <code>yes</code>, then stops the launchd jobs, deletes <code>/etc/fez</code>, drops the loopback alias, removes the log and unmounts the share. It never touches the server or your backups.</p>
+<pre><code>/tmp/install_fez.sh --uninstall</code></pre>
+<p>Afterwards, remove the backup disk in System Settings &rarr; General &rarr; Time Machine, or it will keep trying.</p>
+</details>
+
+<details>
+<summary>how do I remove it from my server?</summary>
+<p>Bring the service down, then delete <code>/etc/fez</code>:</p>
+<pre><code>cd /etc/fez
+docker compose down
+rm -rf /etc/fez</code></pre>
+<p>That just leaves the backups, which are in <code>/tm</code>. Delete them when you're ready.</p>
+</details>
+
+
+<details>
+<summary>what versions of macOS are supported?</summary>
+<p>macOS High Sierra and up. I test each release end-to-end on the latest OS as well as a High Sierra machine.</p>
+<p>macOS versions before High Sierra shipped with openssl 0.9.8, which you could feasibly make work in a fork by severely tuning down nginx's cipher options (see <code>legacy-branch</code> for my attempt at this, but I make no guarantees that it will work), but I decided the added complexity was not worth supporting in the mainline release.</p>
+</details>
+
+<details>
+<summary>will this work on other servers besides InterServer?</summary>
+<p>Yes. Any Linux server you can ssh into as root works, as long as it can run Docker and has the disk space. Nothing in the installer is specific to InterServer.</p>
+</details>
+
+
+<details>
+<summary>I need more help!</summary>
+<p>Open an Issue in our <a href="https://github.com/fezbackup/fez">Github repo</a>, and we will try our very best to diagnose the situation and assist you <code><3</code>.</p>
+</details>
+
+</main>
+
+<footer>
+  <p>Source: <a href="https://github.com/fezbackup/fez">github.com/fezbackup/fez</a></p>
+  <p>The <a href="https://www.interserver.net/r/925312?url=https://www.interserver.net/vps/storage.html" rel="sponsored nofollow">InterServer link</a> is an affiliate link. Use it if you wish to support the software.</p>
+  <p>fez is not affiliated with, authorized by, or endorsed by Apple Inc.</p>
+</footer>
+
+</div>
+<script>
+// Adds a copy button to every code block. Skips the diagram, which is a <pre>
+// with no <code> inside it.
+(function () {
+  var CLIPBOARD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  var CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+
+  function copy(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    // http and file:// have no clipboard API
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      ok ? resolve() : reject();
+    });
+  }
+
+  var expandAll = document.querySelector('.expand-all');
+  if (expandAll) {
+    expandAll.addEventListener('click', function () {
+      var open = expandAll.getAttribute('data-open') !== 'yes';
+      document.querySelectorAll('details').forEach(function (d) { d.open = open; });
+      expandAll.setAttribute('data-open', open ? 'yes' : 'no');
+      expandAll.textContent = open ? '[-] all' : '[+] all';
+    });
+  }
+
+  document.querySelectorAll('pre > code').forEach(function (code) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'copy';
+    button.innerHTML = CLIPBOARD;
+    button.setAttribute('aria-label', 'Copy to clipboard');
+
+    button.addEventListener('click', function () {
+      copy(code.textContent).then(function () {
+        button.innerHTML = CHECK;
+        button.classList.add('copied');
+        button.setAttribute('aria-label', 'Copied');
+        setTimeout(function () {
+          button.innerHTML = CLIPBOARD;
+          button.classList.remove('copied');
+          button.setAttribute('aria-label', 'Copy to clipboard');
+        }, 1400);
+      }).catch(function () {
+        button.setAttribute('aria-label', 'Copy failed, select the text instead');
+      });
+    });
+
+    var pre = code.parentElement;
+    var wrapper = document.createElement('div');
+    wrapper.className = 'codeblock';
+    pre.parentNode.insertBefore(wrapper, pre);
+    wrapper.appendChild(pre);
+    wrapper.appendChild(button);
+  });
+})();
+</script>
+</body>
+</html>
